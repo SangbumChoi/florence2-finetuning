@@ -7,6 +7,7 @@ from datasets import (get_dataset_config_names,
 from PIL import Image
 from torch.utils.data import Dataset
 from tqdm import tqdm
+import torch
 
 
 class BaseDataset(Dataset):
@@ -127,3 +128,56 @@ class TheCauldronDataset(BaseDataset):
             image = image.convert("RGB")
 
         return question, answer, image
+
+
+class ObjectDetectionDataset(BaseDataset):
+    def __init__(self, split, processor, name="rishitdagli/cppe-5", class_list=["coverall", "face shield", "glove", "goggle", "mask"]):
+        super().__init__(split)
+        self.data = load_dataset(name, split=split)
+        self.processor = processor
+        self.class_list = class_list
+        self.task_prompt = "<OD>"
+
+    def __getitem__(self, idx):
+        example = self.data[idx]
+        task = self.task_prompt
+
+        # bbox_formatted_list = []
+        objects = example["objects"]
+        image = example["image"]
+
+        width, height = image.size
+        bins_w, bins_h = [1000, 1000]  # Quantization bins.
+        size_per_bin_w = width / bins_w
+        size_per_bin_h = height / bins_h
+
+        bboxes = objects["bbox"]
+        categories = objects["category"]
+        bbox_str = ""
+        for (cat, bbox) in zip(categories, bboxes):
+            # if len(bbox_str) == 0:
+            bbox_str += self.class_list[cat]
+            bbox = bbox.copy()
+
+            xmin, ymin, w, h = torch.tensor(bbox).split(1, dim=-1)
+            xmax, ymax = xmin + w, ymin + h
+            quantized_xmin = (
+                xmin / size_per_bin_w).floor().clamp(0, bins_w - 1)
+            quantized_ymin = (
+                ymin / size_per_bin_h).floor().clamp(0, bins_h - 1)
+            quantized_xmax = (
+                xmax / size_per_bin_w).floor().clamp(0, bins_w - 1)
+            quantized_ymax = (
+                ymax / size_per_bin_h).floor().clamp(0, bins_h - 1)
+
+            quantized_boxes = torch.cat(
+                (quantized_xmin, quantized_ymin, quantized_xmax, quantized_ymax), dim=-1
+            ).int()
+
+            bbox_str += str(f"<loc_{quantized_boxes[0]}><loc_{quantized_boxes[1]}><loc_{quantized_boxes[2]}><loc_{quantized_boxes[3]}>")
+
+            # bbox_formatted_list.append(bbox_str)
+
+        if image.mode != "RGB":
+            image = image.convert("RGB")
+        return task, bbox_str, image
